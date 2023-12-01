@@ -589,3 +589,90 @@ class StableDiffusionGuidance(BaseObject):
             min_step_percent=C(self.cfg.min_step_percent, epoch, global_step),
             max_step_percent=C(self.cfg.max_step_percent, epoch, global_step),
         )
+
+
+@threestudio.register("stable-diffusion-nfsd-guidance")
+class StableDiffusionGuidanceNFSD(StableDiffusionGuidance):
+
+    def compute_grad_sds(
+        self,
+        latents: Float[Tensor, "B 4 64 64"],
+        t: Int[Tensor, "B"],
+        prompt_utils: PromptProcessorOutput,
+        elevation: Float[Tensor, "B"],
+        azimuth: Float[Tensor, "B"],
+        camera_distances: Float[Tensor, "B"],
+    ):
+        batch_size = elevation.shape[0]
+        neg_guidance_weights = None
+        text_embeddings = prompt_utils.get_text_embeddings(
+            elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting,
+            with_null=True)
+        with torch.no_grad():
+            noise = torch.randn_like(latents)
+            latents_noisy = self.scheduler.add_noise(latents, noise, t)
+            latent_model_input = torch.cat([latents_noisy] * 3, dim=0)
+            noise_pred = self.forward_unet(
+                latent_model_input,
+                torch.cat([t] * 3),
+                encoder_hidden_states=text_embeddings,
+            )  # (4B, 3, 64, 64)
+
+        noise_pred_text = noise_pred[:batch_size]
+        noise_pred_uncond = noise_pred[batch_size : batch_size * 2]
+        noise_pred_neg = noise_pred[batch_size * 2 :]
+
+        noise_pred = self.cfg.guidance_scale * (noise_pred_text - noise_pred_uncond)
+        if t < 200:
+            noise_pred += noise_pred_uncond
+        else:
+            noise_pred += noise_pred_uncond - noise_pred_neg
+
+        if False:
+            neg_guidance_weights = None
+            text_embeddings = prompt_utils.get_text_embeddings(
+                elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
+            )
+            # predict the noise residual with unet, NO grad!
+            with torch.no_grad():
+                # add noise
+                noise = torch.randn_like(latents)  # TODO: use torch generator
+                latents_noisy = self.scheduler.add_noise(latents, noise, t)
+                # pred noise
+                latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
+                noise_pred = self.forward_unet(
+                    latent_model_input,
+                    torch.cat([t] * 2),
+                    encoder_hidden_states=text_embeddings,
+                )
+
+            # perform guidance (high scale from paper!)
+            noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred = noise_pred_text + self.cfg.guidance_scale * (
+                noise_pred_text - noise_pred_uncond
+            )
+
+        if self.cfg.weighting_strategy == "sds":
+            # w(t), sigma_t^2
+            w = (1 - self.alphas[t]).view(-1, 1, 1, 1)
+        elif self.cfg.weighting_strategy == "uniform":
+            w = 1
+        elif self.cfg.weighting_strategy == "fantasia3d":
+            w = (self.alphas[t] ** 0.5 * (1 - self.alphas[t])).view(-1, 1, 1, 1)
+        else:
+            raise ValueError(
+                f"Unknown weighting strategy: {self.cfg.weighting_strategy}"
+            )
+
+        grad = w * (noise_pred - noise)
+
+        guidance_eval_utils = {
+            "use_perp_neg": prompt_utils.use_perp_neg,
+            "neg_guidance_weights": neg_guidance_weights,
+            "text_embeddings": text_embeddings,
+            "t_orig": t,
+            "latents_noisy": latents_noisy,
+            "noise_pred": noise_pred,
+        }
+
+        return grad, guidance_eval_utils

@@ -37,6 +37,7 @@ class DirectionConfig:
 @dataclass
 class PromptProcessorOutput:
     text_embeddings: Float[Tensor, "N Nf"]
+    null_text_embeddings: Float[Tensor, "N Nf"]
     uncond_text_embeddings: Float[Tensor, "N Nf"]
     text_embeddings_vd: Float[Tensor, "Nv N Nf"]
     uncond_text_embeddings_vd: Float[Tensor, "Nv N Nf"]
@@ -74,6 +75,41 @@ class PromptProcessorOutput:
                 batch_size, -1, -1
             )
 
+        # IMPORTANT: we return (cond, uncond), which is in different order than other implementations!
+        return torch.cat([text_embeddings, uncond_text_embeddings], dim=0)
+
+    def get_text_embeddings(
+        self,
+        elevation: Float[Tensor, "B"],
+        azimuth: Float[Tensor, "B"],
+        camera_distances: Float[Tensor, "B"],
+        view_dependent_prompting: bool = True,
+        with_null: bool = False,
+    ) -> Float[Tensor, "BB N Nf"]:
+        batch_size = elevation.shape[0]
+
+        if view_dependent_prompting:
+            # Get direction
+            direction_idx = torch.zeros_like(elevation, dtype=torch.long)
+            for d in self.directions:
+                direction_idx[
+                    d.condition(elevation, azimuth, camera_distances)
+                ] = self.direction2idx[d.name]
+
+            # Get text embeddings
+            text_embeddings = self.text_embeddings_vd[direction_idx]  # type: ignore
+            uncond_text_embeddings = self.uncond_text_embeddings_vd[direction_idx]  # type: ignore
+        else:
+            text_embeddings = self.text_embeddings.expand(batch_size, -1, -1)  # type: ignore
+            uncond_text_embeddings = self.uncond_text_embeddings.expand(  # type: ignore
+                batch_size, -1, -1
+            )
+
+        if with_null:
+            null_text_embeddings = self.null_text_embeddings.expand(  # type: ignore
+                batch_size, -1, -1
+            )
+            return torch.cat([text_embeddings, uncond_text_embeddings, null_text_embeddings], dim=0)
         # IMPORTANT: we return (cond, uncond), which is in different order than other implementations!
         return torch.cat([text_embeddings, uncond_text_embeddings], dim=0)
 
@@ -346,6 +382,7 @@ class PromptProcessor(BaseObject):
 
         all_prompts = (
             [self.prompt]
+            + [""] # real unconditional text embeddings
             + [self.negative_prompt]
             + self.prompts_vd
             + self.negative_prompts_vd
@@ -391,6 +428,7 @@ class PromptProcessor(BaseObject):
         # synchronize, to ensure the text embeddings have been computed and saved to cache
         barrier()
         self.text_embeddings = self.load_from_cache(self.prompt)[None, ...]
+        self.null_text_embeddings = self.load_from_cache("")[None, ...]
         self.uncond_text_embeddings = self.load_from_cache(self.negative_prompt)[
             None, ...
         ]
@@ -502,6 +540,7 @@ class PromptProcessor(BaseObject):
     def __call__(self) -> PromptProcessorOutput:
         return PromptProcessorOutput(
             text_embeddings=self.text_embeddings,
+            null_text_embeddings=self.null_text_embeddings,
             uncond_text_embeddings=self.uncond_text_embeddings,
             text_embeddings_vd=self.text_embeddings_vd,
             uncond_text_embeddings_vd=self.uncond_text_embeddings_vd,
