@@ -643,6 +643,7 @@ class StableDiffusionGuidanceNFSD(StableDiffusionGuidance):
     def compute_grad_sds(
         self,
         latents: Float[Tensor, "B 4 64 64"],
+        image: Float[Tensor, "B 3 512 512"],
         t: Int[Tensor, "B"],
         prompt_utils: PromptProcessorOutput,
         elevation: Float[Tensor, "B"],
@@ -712,6 +713,16 @@ class StableDiffusionGuidanceNFSD(StableDiffusionGuidance):
 
         grad = w * (noise_pred - noise)
 
+        # image-space SDS proposed in HiFA: https://hifa-team.github.io/HiFA-site/
+        if self.cfg.use_img_loss:
+            alpha = (self.alphas[t] ** 0.5).view(-1, 1, 1, 1)
+            sigma = ((1 - self.alphas[t]) ** 0.5).view(-1, 1, 1, 1)
+            latents_denoised = (latents_noisy - sigma * noise_pred) / alpha
+            image_denoised = self.decode_latents(latents_denoised)
+            grad_img = w * (image - image_denoised) * alpha / sigma
+        else:
+            grad_img = None
+            
         guidance_eval_utils = {
             "use_perp_neg": prompt_utils.use_perp_neg,
             "neg_guidance_weights": neg_guidance_weights,

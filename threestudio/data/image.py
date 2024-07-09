@@ -105,7 +105,7 @@ class SingleImageDataBase:
         self.light_position = light_position
         self.elevation_deg, self.azimuth_deg = elevation_deg, azimuth_deg
         self.camera_distance = camera_distance
-        self.fovy = torch.deg2rad(torch.FloatTensor([self.cfg.default_fovy_deg]))
+        self.fov_y = torch.deg2rad(torch.FloatTensor([self.cfg.default_fovy_deg]))
 
         self.heights: List[int] = (
             [self.cfg.height] if isinstance(self.cfg.height, int) else self.cfg.height
@@ -130,7 +130,7 @@ class SingleImageDataBase:
             for (height, width) in zip(self.heights, self.widths)
         ]
         self.focal_lengths = [
-            0.5 * height / torch.tan(0.5 * self.fovy) for height in self.heights
+            0.5 * height / torch.tan(0.5 * self.fov_y) for height in self.heights
         ]
 
         self.height: int = self.heights[0]
@@ -155,7 +155,7 @@ class SingleImageDataBase:
         )
 
         proj_mtx: Float[Tensor, "4 4"] = get_projection_matrix(
-            self.fovy, self.width / self.height, 0.1, 100.0
+            self.fov_y, self.width / self.height, 0.1, 100.0
         )  # FIXME: hard-coded near and far
         mvp_mtx: Float[Tensor, "4 4"] = get_mvp_matrix(self.c2w, proj_mtx)
 
@@ -265,7 +265,7 @@ class SingleImageIterableDataset(IterableDataset, SingleImageDataBase, Updateabl
             "height": self.height,
             "width": self.width,
             "c2w": self.c2w4x4,
-            "fovy": self.fovy,
+            "fovy": self.fov_y,
         }
         if self.cfg.use_random_camera:
             batch["random_camera"] = self.random_pose_generator.collate(None)

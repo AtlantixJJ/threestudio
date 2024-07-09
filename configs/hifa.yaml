@@ -50,7 +50,7 @@ system:
   renderer_type: "nerf-volume-renderer"
   renderer:
     radius: ${system.geometry.radius}
-    num_samples_per_ray: 512
+    num_samples_per_ray: 128 # original 512, cut due to GPU memory
 
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_processor:
